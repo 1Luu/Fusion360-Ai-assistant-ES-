@@ -1,6 +1,11 @@
-# Ignorar claves y archivos generados
+# Ignorar claves y secretos
+api_key
 api_keys.json
-api_key.txt
+.env
+
+# Ignorar archivos autogenerados
 chat_ui*.html
+
+# Ignorar configuraciones locales
+.vscode/
 __pycache__/
-*.pyc
