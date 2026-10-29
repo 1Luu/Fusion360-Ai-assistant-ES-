@@ -1,0 +1,6 @@
+# Ignorar claves y archivos generados
+api_keys.json
+api_key.txt
+chat_ui*.html
+__pycache__/
+*.pyc
