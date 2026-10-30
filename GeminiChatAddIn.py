@@ -13,22 +13,21 @@ historial_chat = []
 PROVEEDORES_LISTA = ("gemini", "groq", "openrouter", "claude", "openai", "deepseek")
 indice_rotacion = {p: 0 for p in PROVEEDORES_LISTA + ("auto",)}
 
-# Caché en memoria de los modelos reales activos descubiertos en Google AI Studio
 modelos_gemini_descubiertos = []
 keys_sin_saldo_o_invalidas = set()
 
-CMD_ID = "GeminiPaletteBtn_V8_ID"
+CMD_ID = "GeminiPaletteBtn_V82_ID"
 CMD_NAME = "Asistente Multi-IA CAD"
-CMD_DESC = "Muestra u oculta el panel lateral de modelado asistido por IA (v8.0 Definitivo)"
-PALETTE_ID = "MultiIAChatPalette_V8_ID"
+CMD_DESC = "Muestra u oculta el panel lateral de modelado asistido por IA (v8.2 Macro-Vault)"
+PALETTE_ID = "MultiIAChatPalette_V82_ID"
 
 CARPETA_USUARIO = os.path.expanduser("~")
 RUTA_PERMANENTE_JSON = os.path.join(CARPETA_USUARIO, ".fusion360_multi_ia_keys.json")
+RUTA_MACROS_JSON = os.path.join(CARPETA_USUARIO, ".fusion360_multi_ia_macros.json")
 CARPETA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
 RUTA_LOCAL_JSON = os.path.join(CARPETA_SCRIPT, "api_keys.json")
 CARPETA_ICONOS = os.path.join(CARPETA_SCRIPT, "resources", "icono_ia")
 
-# Modelos base por defecto (se complementan automáticamente consultando /v1beta/models)
 MODELOS_GEMINI_BASE = [
     "gemini-flash-latest",
     "gemini-flash-lite-latest"
@@ -45,9 +44,121 @@ MODELOS_OPENROUTER = [
     "meta-llama/llama-3.3-70b-instruct:free"
 ]
 
+# Plantillas iniciales para usar con 0 tokens desde el primer arranque
+MACROS_INICIALES = [
+    {
+        "nombre": "Brida Mecánica (6 pernos)",
+        "prompt": "Crea una brida circular base diámetro 100mm espesor 12mm, cuello central diámetro 50mm altura total 35mm, perforación central pasante de 30mm y 6 agujeros de 10mm en círculo de paso de 75mm",
+        "codigo": (
+            "sk = rootComp.sketches.add(rootComp.xYConstructionPlane)\n"
+            "circles = sk.sketchCurves.sketchCircles\n"
+            "circles.addByCenterRadius(adsk.core.Point3D.create(0, 0, 0), u(50))\n"
+            "circles.addByCenterRadius(adsk.core.Point3D.create(0, 0, 0), u(15))\n"
+            "for i in range(6):\n"
+            "    ang = i * (2 * math.pi / 6)\n"
+            "    px = 37.5 * math.cos(ang)\n"
+            "    py = 37.5 * math.sin(ang)\n"
+            "    circles.addByCenterRadius(adsk.core.Point3D.create(u(px), u(py), 0), u(5))\n"
+            "perfiles_base = adsk.core.ObjectCollection.create()\n"
+            "for p in sk.profiles:\n"
+            "    if p.areaProperties().area > (math.pi * (u(20)**2)):\n"
+            "        perfiles_base.add(p)\n"
+            "ext = rootComp.features.extrudeFeatures\n"
+            "ext.addSimple(perfiles_base, adsk.core.ValueInput.createByReal(u(12)), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)\n"
+            "sk2 = rootComp.sketches.add(rootComp.xYConstructionPlane)\n"
+            "c2 = sk2.sketchCurves.sketchCircles\n"
+            "c2.addByCenterRadius(adsk.core.Point3D.create(0, 0, 0), u(25))\n"
+            "c2.addByCenterRadius(adsk.core.Point3D.create(0, 0, 0), u(15))\n"
+            "for p in sk2.profiles:\n"
+            "    if p.sketchLoops.count == 2:\n"
+            "        ext.addSimple(p, adsk.core.ValueInput.createByReal(u(35)), adsk.fusion.FeatureOperations.JoinFeatureOperation)"
+        )
+    },
+    {
+        "nombre": "Cubo Base 10x10x10 mm",
+        "prompt": "Crea un cubo de 10x10x10 mm en el plano XY",
+        "codigo": (
+            "sk = rootComp.sketches.add(rootComp.xYConstructionPlane)\n"
+            "sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(u(10), u(10), 0))\n"
+            "prof = sk.profiles.item(0)\n"
+            "rootComp.features.extrudeFeatures.addSimple(prof, adsk.core.ValueInput.createByReal(u(10)), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)"
+        )
+    },
+    {
+        "nombre": "Empalme 1mm (En selección mouse)",
+        "prompt": "Aplica un empalme (fillet) de 1mm a las aristas o caras seleccionadas con el mouse",
+        "codigo": (
+            "edgeCol = adsk.core.ObjectCollection.create()\n"
+            "for e in sel_edges:\n"
+            "    edgeCol.add(e)\n"
+            "for f in sel_faces:\n"
+            "    for e in f.edges:\n"
+            "        edgeCol.add(e)\n"
+            "if edgeCol.count == 0:\n"
+            "    raise Exception('Selecciona primero una o más aristas/caras con el mouse.')\n"
+            "fillets = rootComp.features.filletFeatures\n"
+            "fInput = fillets.createInput()\n"
+            "fInput.addConstantRadiusEdgeSet(edgeCol, adsk.core.ValueInput.createByReal(u(1.0)), True)\n"
+            "fillets.add(fInput)"
+        )
+    }
+]
+
 
 # ==============================================================================
-# GENERADOR AUTOMÁTICO DE ICONOS PARA LA BARRA DE FUSION 360
+# GESTIÓN DE BIBLIOTECA DE GEOMETRÍAS (0 TOKENS)
+# ==============================================================================
+def cargar_biblioteca_macros():
+    if os.path.exists(RUTA_MACROS_JSON):
+        try:
+            with open(RUTA_MACROS_JSON, "r", encoding="utf-8") as f:
+                datos = json.load(f)
+                if isinstance(datos, list) and len(datos) > 0:
+                    return datos
+        except:
+            pass
+    guardar_biblioteca_macros(MACROS_INICIALES)
+    return list(MACROS_INICIALES)
+
+
+def guardar_biblioteca_macros(lista_macros):
+    try:
+        with open(RUTA_MACROS_JSON, "w", encoding="utf-8") as f:
+            json.dump(lista_macros, f, indent=2, ensure_ascii=False)
+    except:
+        pass
+
+
+def agregar_o_actualizar_macro(nombre, prompt_orig, codigo_py):
+    macros = cargar_biblioteca_macros()
+    nombre_limpio = nombre.strip()[:45]
+    reemplazado = False
+    for m in macros:
+        if m.get("nombre", "").lower() == nombre_limpio.lower():
+            m["nombre"] = nombre_limpio
+            m["prompt"] = prompt_orig
+            m["codigo"] = codigo_py
+            reemplazado = True
+            break
+    if not reemplazado:
+        macros.insert(0, {
+            "nombre": nombre_limpio,
+            "prompt": prompt_orig,
+            "codigo": codigo_py
+        })
+    guardar_biblioteca_macros(macros)
+    return macros
+
+
+def borrar_macro_por_nombre(nombre):
+    macros = cargar_biblioteca_macros()
+    macros = [m for m in macros if m.get("nombre") != nombre]
+    guardar_biblioteca_macros(macros)
+    return macros
+
+
+# ==============================================================================
+# GENERADOR AUTOMÁTICO DE ICONOS
 # ==============================================================================
 def crear_png_icono(ruta_archivo, tam):
     filas = bytearray()
@@ -113,7 +224,7 @@ def asegurar_iconos_barra():
 
 
 # ==============================================================================
-# GESTIÓN PERMANENTE DE MÚLTIPLES TOKENS (POOL DE API KEYS)
+# GESTIÓN PERMANENTE DE TOKENS (POOL DE API KEYS)
 # ==============================================================================
 def normalizar_estructura(datos):
     base = {p: [] for p in PROVEEDORES_LISTA}
@@ -228,13 +339,9 @@ def resumir_pool_proveedor(proveedor):
 
 
 # ==============================================================================
-# AUTO-DESCUBRIMIENTO DE MODELOS ACTIVOS EN GOOGLE AI STUDIO (/v1beta/models)
+# AUTO-DESCUBRIMIENTO DE MODELOS ACTIVOS EN GOOGLE AI STUDIO
 # ==============================================================================
 def obtener_modelos_gemini_activos(api_key):
-    """
-    Consulta directamente a Google qué modelos Flash y Lite están activos hoy
-    para esta API Key, evitando errores 404 y teniendo alternativas inmediatas ante errores 503.
-    """
     global modelos_gemini_descubiertos
     if modelos_gemini_descubiertos:
         return modelos_gemini_descubiertos
@@ -247,7 +354,7 @@ def obtener_modelos_gemini_activos(api_key):
         cabeceras = {
             "x-goog-api-key": api_key,
             "Connection": "close",
-            "User-Agent": "Fusion360CAD/8.0"
+            "User-Agent": "Fusion360CAD/8.2"
         }
         conn.request("GET", "/v1beta/models", headers=cabeceras)
         res = conn.getresponse()
@@ -290,7 +397,7 @@ def obtener_modelos_gemini_activos(api_key):
 
 
 # ==============================================================================
-# INTERFAZ GRÁFICA HTML/CSS/JS (v8.0 Definitivo)
+# INTERFAZ GRÁFICA HTML/CSS/JS (v8.2 Macro-Vault)
 # ==============================================================================
 HTML_CONTENT = r"""<!DOCTYPE html>
 <html lang="es">
@@ -300,7 +407,7 @@ HTML_CONTENT = r"""<!DOCTYPE html>
     * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
     body { margin: 0; padding: 10px; background: #22252a; color: #e8eaed; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
     .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 6px; border-bottom: 1px solid #3c4043; font-size: 12px; color: #9aa0a6; gap: 5px; }
-    .badge-v8 { background: #0d47a1; color: #bbdefb; border: 1px solid #2196f3; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .badge-v82 { background: #004d40; color: #80cbc4; border: 1px solid #26a69a; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; white-space: nowrap; }
     select { background: #181a1d; color: #e8eaed; border: 1px solid #3c4043; border-radius: 4px; padding: 4px 6px; font-size: 11px; flex: 1; outline: none; font-weight: 600; }
     select:focus { border-color: #0696d7; }
     .btn-small { background: #3c4043; color: #e8eaed; border: none; padding: 4px 7px; border-radius: 4px; cursor: pointer; font-size: 11px; white-space: nowrap; }
@@ -312,7 +419,16 @@ HTML_CONTENT = r"""<!DOCTYPE html>
     .btn-save:hover { background: #388e3c; }
     .btn-del-key { background: #5c1e1e; color: #ffb3b3; border: none; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 10px; white-space: nowrap; }
     .btn-del-key:hover { background: #7a2828; }
-    .status-bar { font-size: 10.5px; color: #8ab4f8; padding-bottom: 6px; border-bottom: 1px solid #3c4043; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-bar { font-size: 10.5px; color: #8ab4f8; padding-bottom: 5px; border-bottom: 1px solid #3c4043; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* BARRA DE BIBLIOTECA 0-TOKENS */
+    .macro-bar { display: flex; gap: 4px; padding: 5px 0; border-bottom: 1px solid #3c4043; align-items: center; }
+    .macro-label { font-size: 10.5px; color: #80cbc4; font-weight: 700; white-space: nowrap; }
+    .btn-run-macro { background: #00695c; color: #ffffff; border: 1px solid #26a69a; padding: 4px 7px; border-radius: 4px; cursor: pointer; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+    .btn-run-macro:hover { background: #00897b; }
+    .btn-load-prompt { background: #3c4043; color: #e8eaed; border: none; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 10.5px; white-space: nowrap; }
+    .btn-load-prompt:hover { background: #5f6368; }
+
     #chat-box { flex: 1; overflow-y: auto; padding: 10px 4px; display: flex; flex-direction: column; gap: 10px; }
     .msg { padding: 9px 12px; border-radius: 8px; max-width: 94%; font-size: 12.5px; line-height: 1.45; word-wrap: break-word; white-space: pre-wrap; }
     .user { background: #0696d7; color: #ffffff; align-self: flex-end; border-bottom-right-radius: 2px; }
@@ -331,11 +447,25 @@ HTML_CONTENT = r"""<!DOCTYPE html>
     button.send:hover { background: #057bb0; }
     button.stop-btn { background: #a83232; color: white; border: none; padding: 0 10px; border-radius: 6px; cursor: pointer; font-weight: 600; display: none; font-size: 12px; }
     button.stop-btn:hover { background: #c93b3b; }
+
+    /* ESTILOS VISOR DE CÓDIGO Y GUARDADO EN BIBLIOTECA */
+    .code-container { margin-top: 8px; border-radius: 5px; overflow: hidden; display: none; background: #16181a; border: 1px solid #3c4043; }
+    .code-header { background: #202327; padding: 5px 8px; font-size: 10.5px; display: flex; justify-content: space-between; align-items: center; color: #9aa0a6; border-bottom: 1px solid #333; gap: 4px; flex-wrap: wrap; }
+    .code-actions { display: flex; gap: 4px; }
+    .code-btn { background: #3c4043; color: #fff; border: none; border-radius: 4px; cursor: pointer; padding: 3px 7px; font-size: 10px; font-weight: 600; }
+    .code-btn:hover { background: #0696d7; }
+    .code-btn-save { background: #00695c; color: #e0f2f1; border: none; border-radius: 4px; cursor: pointer; padding: 3px 7px; font-size: 10px; font-weight: 600; }
+    .code-btn-save:hover { background: #00897b; }
+    .save-drawer { display: none; background: #1c2526; padding: 6px 8px; border-bottom: 1px solid #2e4446; gap: 4px; align-items: center; }
+    .save-drawer input { flex: 1; background: #111516; color: #80cbc4; border: 1px solid #26a69a; border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none; }
+    .code-content { padding: 9px; font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; color: #d4d4d4; white-space: pre-wrap; word-break: break-all; margin: 0; max-height: 220px; overflow-y: auto; }
+    .btn-toggle-code { background: transparent; color: #8ab4f8; border: 1px solid #8ab4f8; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 10.5px; margin-top: 7px; display: inline-block; font-weight: 600; }
+    .btn-toggle-code:hover { background: rgba(138, 180, 248, 0.15); }
 </style>
 </head>
 <body>
     <div class="header">
-        <span class="badge-v8">v8.0 Definitivo</span>
+        <span class="badge-v82">v8.2 Macro-Vault</span>
         <select id="provider-select" onchange="cambiarProveedor()">
             <option value="gemini" selected>Google Gemini (Flash + Lite)</option>
             <option value="groq">⚡ Groq (Llama 3.3 70B / Gratis)</option>
@@ -349,15 +479,24 @@ HTML_CONTENT = r"""<!DOCTYPE html>
     </div>
     <div class="key-bar">
         <input type="password" id="api-key-input" placeholder="Añade 1 o varias Keys (separadas por coma)..." />
-        <button class="btn-save" onclick="guardarKey()">+ Añadir Key</button>
+        <button class="btn-save" onclick="guardarKey()">+ Key</button>
         <button class="btn-del-key" title="Borrar las Keys de este proveedor" onclick="borrarKeys()">✕</button>
     </div>
     <div class="status-bar" id="key-status">Cargando tokens guardados...</div>
 
+    <!-- BARRA DE BIBLIOTECA DE GEOMETRÍAS (0 TOKENS) -->
+    <div class="macro-bar">
+        <span class="macro-label">📚 0-Tokens:</span>
+        <select id="macro-select" title="Geometrías guardadas listas para ejecutar sin gastar tokens"></select>
+        <button class="btn-run-macro" title="Dibujar esta pieza inmediatamente sin gastar tokens" onclick="ejecutarMacroSeleccionada()">▶ Crear</button>
+        <button class="btn-load-prompt" title="Cargar el prompt en la caja de texto para editar medidas" onclick="cargarPromptMacro()">📝</button>
+        <button class="btn-del-key" title="Eliminar pieza seleccionada de la biblioteca" onclick="eliminarMacroSeleccionada()">✕</button>
+    </div>
+
     <div id="chat-box">
-        <div class="msg bot" id="welcome-msg"><span class="welcome-title">👋 Cómo usar el Asistente CAD:</span>1. Elige tu IA arriba y añade tus API Keys (quedan guardadas en tu PC).
-2. <b>Opcional:</b> Selecciona con el mouse caras, aristas o cuerpos en tu pieza para modificarlos directamente.
-3. Escribe tu instrucción abajo y presiona <b>Enter</b>.<div class="divider"></div><span class="updates-title">🚀 Correcciones clave en v8.0 Definitivo:</span><ul class="updates-list"><li><b>Conexión Unitaria Directa (Sin Bloqueo GIL):</b> Eliminado el bloqueo de hilos de <i>v7.0</i>; cada modelo se consulta en pasos atómicos rápidos.</li><li><b>Salto Anti-503 (`flash-lite` + Auto-Detección):</b> Si <i>gemini-flash-latest</i> da error 503, salta al instante a <i>gemini-flash-lite-latest</i> y a tus Keys de respaldo.</li><li><b>Auto-Corrección + Selección por Mouse:</b> Repara errores geométricos automáticamente.</li></ul></div>
+        <div class="msg bot" id="welcome-msg"><span class="welcome-title">👋 Cómo usar el Asistente CAD:</span>1. Elige tu IA arriba o ejecuta directo una pieza de la barra <b>📚 0-Tokens</b>.
+2. <b>Opcional:</b> Selecciona con el mouse caras o aristas para modificarlas.
+3. En cualquier respuesta, abre <b>👁️ Ver Código Python</b> para auditar el script o guardarlo con <b>💾 Guardar 0-Tokens</b>.<div class="divider"></div><span class="updates-title">🚀 Novedades en v8.2 Macro-Vault:</span><ul class="updates-list"><li><b>Biblioteca Local (0 Tokens):</b> Guarda scripts de geometrías complejas y ejecútalos en 0,05s sin gastar cuota de API.</li><li><b>Visor de Código + Copiado Seguro:</b> Audita y copia el código Python generado en cada mensaje.</li><li><b>Salto Anti-503 + Auto-Fix:</b> Rotación automática hacia <i>flash-lite</i>, Groq y OpenRouter.</li></ul></div>
     </div>
     <div class="input-area">
         <textarea id="prompt" placeholder="Selecciona algo con el mouse o escribe qué modelar..."></textarea>
@@ -371,12 +510,14 @@ HTML_CONTENT = r"""<!DOCTYPE html>
         const keyInput = document.getElementById('api-key-input');
         const providerSelect = document.getElementById('provider-select');
         const keyStatus = document.getElementById('key-status');
+        const macroSelect = document.getElementById('macro-select');
         const btnCancelar = document.getElementById('btn-cancelar');
         const HTML_BIENVENIDA = document.getElementById('welcome-msg').innerHTML;
 
         let colaPedidos = [];
         let procesandoCola = false;
         let canceladoPorUsuario = false;
+        let listaMacrosCache = [];
 
         const EJEMPLOS_KEY = {
             gemini: 'Pega Key de Gemini (AIzaSy... o AQ.Ab8...)',
@@ -400,12 +541,41 @@ HTML_CONTENT = r"""<!DOCTYPE html>
                 if (res && res !== 'VACIA') {
                     keyStatus.textContent = '🔑 ' + res;
                 } else {
-                    keyStatus.textContent = '⚠️ Sin Keys en ' + prov.toUpperCase() + '. Pega una arriba y dale a + Añadir Key.';
+                    keyStatus.textContent = '⚠️ Sin Keys en ' + prov.toUpperCase() + '. Pega una arriba y dale a + Key.';
                 }
             });
         }
 
-        setTimeout(consultarEstadoKey, 300);
+        function actualizarMenuMacros(macros) {
+            listaMacrosCache = macros || [];
+            macroSelect.innerHTML = '';
+            if (listaMacrosCache.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '-1';
+                opt.textContent = '(Biblioteca vacía)';
+                macroSelect.appendChild(opt);
+                return;
+            }
+            listaMacrosCache.forEach((m, idx) => {
+                const opt = document.createElement('option');
+                opt.value = String(idx);
+                opt.textContent = m.nombre;
+                macroSelect.appendChild(opt);
+            });
+        }
+
+        function cargarMacrosIniciales() {
+            adsk.fusionSendData('listar_macros', '{}').then(res => {
+                try {
+                    actualizarMenuMacros(JSON.parse(res));
+                } catch (e) {}
+            });
+        }
+
+        setTimeout(() => {
+            consultarEstadoKey();
+            cargarMacrosIniciales();
+        }, 300);
 
         function cambiarProveedor() {
             consultarEstadoKey();
@@ -422,6 +592,180 @@ HTML_CONTENT = r"""<!DOCTYPE html>
 
         function cancelarActual() {
             canceladoPorUsuario = true;
+        }
+
+        function copiarTextoSeguro(texto, btnElem) {
+            const ta = document.createElement('textarea');
+            ta.value = texto;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+                document.execCommand('copy');
+                btnElem.textContent = '¡Copiado!';
+            } catch (e) {
+                if (navigator.clipboard) navigator.clipboard.writeText(texto);
+                btnElem.textContent = '¡Copiado!';
+            }
+            document.body.removeChild(ta);
+            setTimeout(() => { btnElem.textContent = '📋 Copiar'; }, 1800);
+        }
+
+        function inyectarBotonCodigo(burbujaElem, codigoPython, promptOriginal, isError) {
+            const btnToggle = document.createElement('button');
+            btnToggle.className = 'btn-toggle-code';
+
+            if (isError) {
+                btnToggle.style.color = '#ffb3b3';
+                btnToggle.style.borderColor = '#ffb3b3';
+                btnToggle.textContent = '👁️ Ver Código Fallido';
+            } else {
+                btnToggle.textContent = '👁️ Ver Código Python';
+            }
+
+            const codeCont = document.createElement('div');
+            codeCont.className = 'code-container';
+
+            const codeHead = document.createElement('div');
+            codeHead.className = 'code-header';
+
+            const titleSpan = document.createElement('span');
+            titleSpan.textContent = '🐍 Script Python API';
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'code-actions';
+
+            const btnCopy = document.createElement('button');
+            btnCopy.className = 'code-btn';
+            btnCopy.textContent = '📋 Copiar';
+            btnCopy.onclick = function() {
+                copiarTextoSeguro(codigoPython, btnCopy);
+            };
+
+            const btnSaveMacro = document.createElement('button');
+            btnSaveMacro.className = 'code-btn-save';
+            btnSaveMacro.textContent = '💾 Guardar 0-Tokens';
+
+            actionsDiv.appendChild(btnCopy);
+            if (!isError) {
+                actionsDiv.appendChild(btnSaveMacro);
+            }
+
+            codeHead.appendChild(titleSpan);
+            codeHead.appendChild(actionsDiv);
+
+            // Cajón inline para nombrar y guardar la geometría sin usar popups bloqueables
+            const saveDrawer = document.createElement('div');
+            saveDrawer.className = 'save-drawer';
+
+            const inputNombre = document.createElement('input');
+            inputNombre.type = 'text';
+            inputNombre.placeholder = 'Nombre de la pieza (ej. Engranaje Z20)...';
+            inputNombre.value = (promptOriginal || 'Pieza personalizada').slice(0, 34);
+
+            const btnConfirmSave = document.createElement('button');
+            btnConfirmSave.className = 'btn-run-macro';
+            btnConfirmSave.textContent = 'Guardar';
+            btnConfirmSave.onclick = function() {
+                const nom = inputNombre.value.trim();
+                if (!nom) return;
+                adsk.fusionSendData('guardar_macro', JSON.stringify({
+                    nombre: nom,
+                    prompt: promptOriginal || nom,
+                    codigo: codigoPython
+                })).then(res => {
+                    const datos = JSON.parse(res);
+                    actualizarMenuMacros(datos.macros);
+                    saveDrawer.style.display = 'none';
+                    btnSaveMacro.textContent = '✅ ¡Guardado!';
+                    setTimeout(() => { btnSaveMacro.textContent = '💾 Guardar 0-Tokens'; }, 2000);
+                });
+            };
+
+            saveDrawer.appendChild(inputNombre);
+            saveDrawer.appendChild(btnConfirmSave);
+
+            btnSaveMacro.onclick = function() {
+                saveDrawer.style.display = saveDrawer.style.display === 'flex' ? 'none' : 'flex';
+                if (saveDrawer.style.display === 'flex') inputNombre.focus();
+            };
+
+            const codePre = document.createElement('pre');
+            codePre.className = 'code-content';
+            if (isError) codePre.style.color = '#ff9999';
+            codePre.textContent = codigoPython;
+
+            codeCont.appendChild(codeHead);
+            codeCont.appendChild(saveDrawer);
+            codeCont.appendChild(codePre);
+
+            btnToggle.onclick = function() {
+                if (codeCont.style.display === 'block') {
+                    codeCont.style.display = 'none';
+                    btnToggle.textContent = isError ? '👁️ Ver Código Fallido' : '👁️ Ver Código Python';
+                } else {
+                    codeCont.style.display = 'block';
+                    btnToggle.textContent = '🙈 Ocultar Código';
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+            };
+
+            burbujaElem.appendChild(document.createElement('br'));
+            burbujaElem.appendChild(btnToggle);
+            burbujaElem.appendChild(codeCont);
+        }
+
+        // ==============================================================================
+        // FUNCIONES DE LA BIBLIOTECA 0-TOKENS
+        // ==============================================================================
+        async function ejecutarMacroSeleccionada() {
+            const idx = parseInt(macroSelect.value, 10);
+            if (isNaN(idx) || idx < 0 || idx >= listaMacrosCache.length) return;
+
+            const macro = listaMacrosCache[idx];
+            agregarMensaje('⚡ [Biblioteca 0-Tokens]: ' + macro.nombre, 'user');
+            const burbuja = agregarMensaje('🔨 Dibujando desde biblioteca local (0 tokens)...', 'bot');
+
+            await pausaUI(30);
+            try {
+                const execRaw = await adsk.fusionSendData('ejecutar_codigo', JSON.stringify({
+                    codigo: macro.codigo,
+                    mensaje_usuario: 'INSTRUCCIÓN DEL USUARIO: ' + (macro.prompt || macro.nombre),
+                    etiqueta: '📚 Biblioteca 0-Tokens'
+                }));
+                const execRes = JSON.parse(execRaw);
+                burbuja.className = 'msg ' + (execRes.exito ? 'bot' : 'error');
+                burbuja.textContent = '';
+
+                const txtSpan = document.createElement('span');
+                txtSpan.textContent = execRes.exito ? execRes.mensaje : ('❌ Error al ejecutar macro:\n' + execRes.error_corto);
+                burbuja.appendChild(txtSpan);
+
+                inyectarBotonCodigo(burbuja, macro.codigo, macro.prompt, !execRes.exito);
+            } catch (e) {
+                burbuja.className = 'msg error';
+                burbuja.textContent = '❌ Error al ejecutar macro: ' + String(e);
+            }
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function cargarPromptMacro() {
+            const idx = parseInt(macroSelect.value, 10);
+            if (isNaN(idx) || idx < 0 || idx >= listaMacrosCache.length) return;
+            promptInput.value = listaMacrosCache[idx].prompt || listaMacrosCache[idx].nombre;
+            promptInput.focus();
+        }
+
+        function eliminarMacroSeleccionada() {
+            const idx = parseInt(macroSelect.value, 10);
+            if (isNaN(idx) || idx < 0 || idx >= listaMacrosCache.length) return;
+            const nom = listaMacrosCache[idx].nombre;
+            adsk.fusionSendData('borrar_macro', JSON.stringify({ nombre: nom })).then(res => {
+                const datos = JSON.parse(res);
+                actualizarMenuMacros(datos.macros);
+                agregarMensaje('🗑️ Se eliminó "' + nom + '" de tu biblioteca 0-Tokens.', 'bot');
+            });
         }
 
         function cuentaRegresiva(segundos, motivo, burbuja) {
@@ -452,7 +796,6 @@ HTML_CONTENT = r"""<!DOCTYPE html>
             let keysInvalidasSesion = {};
             let ultimoDetalleError = '';
 
-            // Hasta 3 rondas si todos los servidores están temporalmente con error 503
             for (let ronda = 1; ronda <= 3 && !canceladoPorUsuario; ronda++) {
                 let huboSaturacion503 = false;
 
@@ -465,7 +808,6 @@ HTML_CONTENT = r"""<!DOCTYPE html>
                     burbuja.textContent = prefijoAccion + ' con ' + cand.modelo_corto + ' (' + cand.prov.toUpperCase() + ' Key #' + cand.num_key + ')...';
                     chatBox.scrollTop = chatBox.scrollHeight;
 
-                    // Pausa de 60ms para que Fusion 360 refresque la ventana y nunca se congele
                     await pausaUI(60);
                     if (canceladoPorUsuario) break;
 
@@ -581,8 +923,8 @@ HTML_CONTENT = r"""<!DOCTYPE html>
                 let historialTrabajo = prep.historial.slice();
                 let exitoFinal = false;
                 let errorFinal = '';
+                let ultimoResIA = null;
 
-                // Hasta 3 intentos de Auto-Corrección si el código Python generado falla al dibujarse
                 for (let fix = 1; fix <= 3 && !canceladoPorUsuario; fix++) {
                     const esFix = fix > 1;
                     item.burbuja.className = esFix ? 'msg autofix' : 'msg bot';
@@ -595,6 +937,8 @@ HTML_CONTENT = r"""<!DOCTYPE html>
                         item.burbuja,
                         prefijo
                     );
+
+                    ultimoResIA = resIA;
 
                     if (!resIA.exito) {
                         errorFinal = resIA.mensaje;
@@ -614,7 +958,14 @@ HTML_CONTENT = r"""<!DOCTYPE html>
                     const execRes = JSON.parse(execRaw);
                     if (execRes.exito) {
                         item.burbuja.className = 'msg bot';
-                        item.burbuja.textContent = execRes.mensaje;
+                        item.burbuja.textContent = '';
+
+                        const txtSpan = document.createElement('span');
+                        txtSpan.textContent = execRes.mensaje;
+                        item.burbuja.appendChild(txtSpan);
+
+                        inyectarBotonCodigo(item.burbuja, resIA.codigo, item.prompt, false);
+
                         exitoFinal = true;
                         break;
                     } else {
@@ -637,7 +988,15 @@ HTML_CONTENT = r"""<!DOCTYPE html>
 
                 if (!exitoFinal) {
                     item.burbuja.className = 'msg error';
-                    item.burbuja.textContent = errorFinal;
+                    item.burbuja.textContent = '';
+
+                    const txtSpanError = document.createElement('span');
+                    txtSpanError.textContent = errorFinal;
+                    item.burbuja.appendChild(txtSpanError);
+
+                    if (ultimoResIA && ultimoResIA.codigo) {
+                        inyectarBotonCodigo(item.burbuja, ultimoResIA.codigo, item.prompt, true);
+                    }
                 }
 
             } catch (err) {
@@ -865,11 +1224,10 @@ def limpiar_bloques_codigo(texto_codigo):
 # ==============================================================================
 def ejecutar_intento_unico_http(prov, clean_key, modelo, sys_prompt, ultimos):
     ctx_ssl = ssl.create_default_context()
-    ua_header = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Fusion360CAD/8.0"
+    ua_header = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Fusion360CAD/8.2"
     conn = None
 
     try:
-        # 1. GOOGLE GEMINI
         if prov == "gemini":
             host = "generativelanguage.googleapis.com"
             contents_gemini = [
@@ -909,7 +1267,6 @@ def ejecutar_intento_unico_http(prov, clean_key, modelo, sys_prompt, ultimos):
                 return {"estado": "KEY_SIN_SALDO", "detalle": f"HTTP {res.status} (Key inválida o sin permiso)"}
             return {"estado": "ERROR", "detalle": f"HTTP {res.status}: {cuerpo[:120]}"}
 
-        # 2. GROQ / OPENROUTER / OPENAI / DEEPSEEK
         elif prov in ("groq", "openrouter", "openai", "deepseek"):
             if prov == "groq":
                 host, ruta = "api.groq.com", "/openai/v1/chat/completions"
@@ -956,7 +1313,6 @@ def ejecutar_intento_unico_http(prov, clean_key, modelo, sys_prompt, ultimos):
                 return {"estado": "KEY_SIN_SALDO", "detalle": f"HTTP {res.status} (Sin saldo o Key inválida)"}
             return {"estado": "ERROR", "detalle": f"HTTP {res.status}: {cuerpo[:120]}"}
 
-        # 3. CLAUDE
         elif prov == "claude":
             host = "api.anthropic.com"
             payload = {
@@ -1000,12 +1356,6 @@ def ejecutar_intento_unico_http(prov, clean_key, modelo, sys_prompt, ultimos):
 
 
 def construir_lista_intentos(prov_elegido, pool):
-    """
-    Construye la secuencia inteligente de intentos (Key + Modelo):
-    1. Intercala los modelos activos del proveedor elegido con las Keys disponibles
-       (para que si 'gemini-flash-latest' tiene caída 503, el segundo intento sea inmediatamente 'gemini-flash-lite-latest').
-    2. Añade al final las Keys gratuitas de respaldo (Groq / OpenRouter / Gemini) como salvavidas si el proveedor principal está caído.
-    """
     global indice_rotacion
     modelos_por_prov = {
         "gemini": MODELOS_GEMINI_BASE,
@@ -1028,7 +1378,6 @@ def construir_lista_intentos(prov_elegido, pool):
         ]
         if not claves_p:
             return
-        # Rotar cuál Key empieza primero en este turno
         turno = indice_rotacion.get(p, 0) % len(claves_p)
         indice_rotacion[p] = turno + 1
         claves_rotadas = claves_p[turno:] + claves_p[:turno]
@@ -1049,7 +1398,6 @@ def construir_lista_intentos(prov_elegido, pool):
             agregar_candidatos_de_proveedor(p)
     else:
         agregar_candidatos_de_proveedor(prov_elegido)
-        # Salvavidas automático: si el proveedor elegido cae en 503 total, usa Groq, Gemini u OpenRouter si hay Keys guardadas
         for p_respaldo in ("groq", "gemini", "openrouter"):
             if p_respaldo != prov_elegido:
                 agregar_candidatos_de_proveedor(p_respaldo)
@@ -1064,13 +1412,33 @@ class PaletteIncomingHandler(adsk.core.HTMLEventHandler):
     def __init__(self):
         super().__init__()
     def notify(self, args):
-        global historial_chat
+        global historial_chat, indice_rotacion
         html_args = adsk.core.HTMLEventArgs.cast(args)
 
         if html_args.action == "estado_key":
             datos = json.loads(html_args.data)
             prov = datos.get("proveedor", "gemini")
             html_args.returnData = resumir_pool_proveedor(prov)
+            return
+
+        if html_args.action == "listar_macros":
+            html_args.returnData = json.dumps(cargar_biblioteca_macros(), ensure_ascii=False)
+            return
+
+        if html_args.action == "guardar_macro":
+            datos = json.loads(html_args.data)
+            nuevas = agregar_o_actualizar_macro(
+                datos.get("nombre", "Pieza"),
+                datos.get("prompt", ""),
+                datos.get("codigo", "")
+            )
+            html_args.returnData = json.dumps({"exito": True, "macros": nuevas}, ensure_ascii=False)
+            return
+
+        if html_args.action == "borrar_macro":
+            datos = json.loads(html_args.data)
+            nuevas = borrar_macro_por_nombre(datos.get("nombre", ""))
+            html_args.returnData = json.dumps({"exito": True, "macros": nuevas}, ensure_ascii=False)
             return
 
         if html_args.action == "guardar_key":
@@ -1106,7 +1474,6 @@ class PaletteIncomingHandler(adsk.core.HTMLEventHandler):
             html_args.returnData = "OK"
             return
 
-        # PASO 1: Armar contexto y lista de candidatos (Instantáneo)
         if html_args.action == "preparar_pedido":
             try:
                 app = adsk.core.Application.get()
@@ -1131,7 +1498,7 @@ class PaletteIncomingHandler(adsk.core.HTMLEventHandler):
                 if not intentos:
                     html_args.returnData = json.dumps({
                         "exito": False,
-                        "mensaje": f"⚠️ No hay ninguna API Key válida en {prov.upper()}. Pega tu clave arriba y dale a '+ Añadir Key'."
+                        "mensaje": f"⚠️ No hay ninguna API Key válida en {prov.upper()}. Pega tu clave arriba y dale a '+ Key'."
                     })
                     return
 
@@ -1151,7 +1518,6 @@ class PaletteIncomingHandler(adsk.core.HTMLEventHandler):
                 html_args.returnData = json.dumps({"exito": False, "mensaje": f"❌ Error al preparar escena: {str(e)}"})
             return
 
-        # PASO 2: Ejecutar 1 solo intento HTTP rápido (sin bucles ni bloqueos)
         if html_args.action == "intento_unitario_ia":
             datos = json.loads(html_args.data)
             resultado = ejecutar_intento_unico_http(
@@ -1164,7 +1530,6 @@ class PaletteIncomingHandler(adsk.core.HTMLEventHandler):
             html_args.returnData = json.dumps(resultado)
             return
 
-        # PASO 3: Dibujar el código 3D en Fusion 360 (con reversión si hay error)
         if html_args.action == "ejecutar_codigo":
             app = adsk.core.Application.get()
             ui = app.userInterface
@@ -1223,6 +1588,8 @@ def limpiar_paneles_antiguos(ui):
         "MultiIAChatPalette_V5_ID",
         "MultiIAChatPalette_V6_ID",
         "MultiIAChatPalette_V7_ID",
+        "MultiIAChatPalette_V8_ID",
+        "MultiIAChatPalette_V81_ID",
         PALETTE_ID
     )
     for pid in ids_viejos:
@@ -1237,8 +1604,9 @@ def limpiar_paneles_antiguos(ui):
 def crear_panel_inicial(ui):
     limpiar_paneles_antiguos(ui)
     cargar_pool_keys()
+    cargar_biblioteca_macros()
 
-    ruta_html = os.path.join(CARPETA_SCRIPT, "chat_ui_v8.html")
+    ruta_html = os.path.join(CARPETA_SCRIPT, "chat_ui_v82.html")
     with open(ruta_html, "w", encoding="utf-8") as f:
         f.write(HTML_CONTENT)
 
@@ -1246,13 +1614,13 @@ def crear_panel_inicial(ui):
 
     palette = ui.palettes.add(
         PALETTE_ID,
-        "Chat Multi-IA CAD v8.0",
+        "Chat Multi-IA CAD v8.2",
         url_local,
         True,
         True,
         True,
-        380,
-        590,
+        385,
+        610,
         True
     )
 
@@ -1306,6 +1674,8 @@ def run(context):
             "GeminiPaletteBtn_V5_ID",
             "GeminiPaletteBtn_V6_ID",
             "GeminiPaletteBtn_V7_ID",
+            "GeminiPaletteBtn_V8_ID",
+            "GeminiPaletteBtn_V81_ID",
             CMD_ID
         )
         for cid in ids_comandos:
@@ -1360,6 +1730,8 @@ def stop(context):
             "GeminiPaletteBtn_V5_ID",
             "GeminiPaletteBtn_V6_ID",
             "GeminiPaletteBtn_V7_ID",
+            "GeminiPaletteBtn_V8_ID",
+            "GeminiPaletteBtn_V81_ID",
             CMD_ID
         )
 
